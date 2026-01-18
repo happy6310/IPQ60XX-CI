@@ -1,22 +1,44 @@
-name: LEDE-x64
+name: ImmortalWrt固件编译工厂
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: 0 19 * * *
+    # 【新增】添加一个下拉选择菜单
+    inputs:
+      device:
+        description: '选择要编译的设备'
+        required: true
+        default: 'athena'
+        type: choice
+        options:
+        - athena
+        - ax6000
+  # schedule:
+    # - cron: 0 20 * * *
 
+# 1. 增加并发控制，避免资源冲突
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+  
 env:
-  REPO_URL: https://github.com/coolsnowwolf/lede.git
-  REPO_BRANCH: master
-  CONFIG_FILE: configs/x64.config
+  REPO_URL: https://github.com/VIKINGYFY/immortalwrt.git
+  REPO_BRANCH: main
+  # 【核心修改1】配置文件根据选择动态变化
+  CONFIG_FILE: configs/${{ github.event.inputs.device }}.config
   DIY_SCRIPT: diy-script.sh
-  CLASH_KERNEL: amd64
+  CLASH_KERNEL: arm64
   CACHE_TOOLCHAIN: true
   UPLOAD_BIN_DIR: false
   FIRMWARE_RELEASE: true
-  FIRMWARE_TAG: LEDE-x64
+  # 【核心修改2】固件发布标签也跟随设备
+  FIRMWARE_TAG: ImmortalWrt-${{ github.event.inputs.device }}
   TZ: Asia/Shanghai
-
+  # 增加以下环境变量
+  CCACHE_DIR: /tmp/ccache
+  CCACHE_MAXSIZE: 2G
+  FORCE_UNSAFE_CONFIGURE: 1
+  
 jobs:
   Build:
     runs-on: ubuntu-22.04
@@ -38,17 +60,35 @@ jobs:
 
     - name: Initialization Environment(初始化环境)
       env:
-        DEBIAN_FRONTEND: noninteractive
+        DEBIAN_FRANCH: noninteractive
       run: |
-        docker rmi $(docker images -q)
-        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
+        # 1. 安全地清理 Docker 镜像（避免无参数错误）
+        docker_images=$(docker images -q)
+        if [ -n "$docker_images" ]; then
+          docker rmi $docker_images || true
+        fi
+        
+        # 2. 清理系统空间
+        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY || true
+        
+        # 3. 移除一些不常用的包
         sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+        
+        # 4. 更新并安装编译依赖 (增加错误处理和检查)
         sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
+        # 先尝试获取依赖列表，如果失败则使用一个基础列表
+        DEPENDS_LIST=$(curl -fsSL is.gd/depends_ubuntu_2204 2>/dev/null) || DEPENDS_LIST="build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip rsync unzip zlib1g-dev file wget curl ccache"
+        echo "将安装的依赖包: $DEPENDS_LIST"
+        sudo -E apt-get -y install $DEPENDS_LIST
+        
         sudo -E systemctl daemon-reload
         sudo -E apt-get -y autoremove --purge
         sudo -E apt-get -y clean
+        
+        # 5. 设置时区
         sudo timedatectl set-timezone "$TZ"
+        
+        echo "环境初始化完成。"
 
     - name: Combine Disks(合并磁盘)
       uses: easimon/maximize-build-space@master
@@ -89,12 +129,19 @@ jobs:
         mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
         prefix: ${{ env.OPENWRT_PATH }}
     
+    - name: Run DIY Script(执行自定义脚本)
+      run: |
+        cd $OPENWRT_PATH
+        chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
+        $GITHUB_WORKSPACE/$DIY_SCRIPT
+    
     - name: Install Feeds(安装feeds)
       run: |
         cd $OPENWRT_PATH
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-  
+
+    
     - name: Load Custom Configuration(加载自定义配置)
       run: |
         [ -e files ] && mv files $OPENWRT_PATH/files
@@ -110,10 +157,11 @@ jobs:
 
     - name: Compile Firmware(开始编译固件)
       id: compile
+      timeout-minutes: 180  # 增加超时时间
       run: |
         cd $OPENWRT_PATH
         echo -e "$(nproc) thread compile"
-        make -j$(nproc) || make -j1 || make -j1 V=s
+        make -j$(nproc) || make -j$(($(nproc)/2)) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
         echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
         echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
@@ -135,7 +183,7 @@ jobs:
         cd $OPENWRT_PATH/bin/targets/*/*
         cat sha256sums
         cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.ipk packages
+        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages
         tar -zcf Packages.tar.gz packages
         rm -rf packages feeds.buildinfo version.buildinfo
         echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
@@ -159,12 +207,12 @@ jobs:
         body: |
           **This is OpenWrt Firmware for ${{ env.FIRMWARE_TAG }}**
           ### 📒 固件信息
-          - 这是LEDE测试版x64的固件
-          - 💻 这是 ${{ env.FIRMWARE_TAG }} 平台使用的LEDE固件
+          - 这是VIKINGYFY测试版带WIFI的固件
+          - 💻 这是 ${{ env.FIRMWARE_TAG }} 平台使用的ImmortalWrt固件
           - ⚽ 固件源码: ${{ env.REPO_URL }}
           - 💝 源码分支: ${{ env.REPO_BRANCH }}
           - 🌐 默认地址: 192.168.1.1
-          - 🔑 默认密码: password
+          - 🔑 默认密码: 
           ### 🧊 固件版本
           - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
           - ${{ env.VERSION_INFO }}

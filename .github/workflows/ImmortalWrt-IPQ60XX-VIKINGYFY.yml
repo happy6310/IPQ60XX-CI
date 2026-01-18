@@ -49,17 +49,35 @@ jobs:
 
     - name: Initialization Environment(初始化环境)
       env:
-        DEBIAN_FRONTEND: noninteractive
+        DEBIAN_FRANCH: noninteractive
       run: |
-        docker rmi $(docker images -q)
-        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY
+        # 1. 安全地清理 Docker 镜像（避免无参数错误）
+        docker_images=$(docker images -q)
+        if [ -n "$docker_images" ]; then
+          docker rmi $docker_images || true
+        fi
+        
+        # 2. 清理系统空间
+        sudo rm -rf /usr/share/dotnet /etc/apt/sources.list.d /usr/local/lib/android $AGENT_TOOLSDIRECTORY || true
+        
+        # 3. 移除一些不常用的包
         sudo -E apt-get -y purge azure-cli ghc* zulu* llvm* firefox google* dotnet* powershell openjdk* mongodb* moby* || true
+        
+        # 4. 更新并安装编译依赖 (增加错误处理和检查)
         sudo -E apt-get -y update
-        sudo -E apt-get -y install $(curl -fsSL is.gd/depends_ubuntu_2204)
+        # 先尝试获取依赖列表，如果失败则使用一个基础列表
+        DEPENDS_LIST=$(curl -fsSL is.gd/depends_ubuntu_2204 2>/dev/null) || DEPENDS_LIST="build-essential clang flex bison g++ gawk gcc-multilib g++-multilib gettext git libncurses5-dev libssl-dev python3 python3-pip rsync unzip zlib1g-dev file wget curl ccache"
+        echo "将安装的依赖包: $DEPENDS_LIST"
+        sudo -E apt-get -y install $DEPENDS_LIST
+        
         sudo -E systemctl daemon-reload
         sudo -E apt-get -y autoremove --purge
         sudo -E apt-get -y clean
+        
+        # 5. 设置时区
         sudo timedatectl set-timezone "$TZ"
+        
+        echo "环境初始化完成。"
 
     - name: Combine Disks(合并磁盘)
       uses: easimon/maximize-build-space@master

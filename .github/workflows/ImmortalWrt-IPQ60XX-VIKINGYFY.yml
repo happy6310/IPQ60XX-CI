@@ -100,17 +100,17 @@ jobs:
         mixkey: ${{ env.SOURCE_REPO }}-${{ env.REPO_BRANCH }}-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}
         prefix: ${{ env.OPENWRT_PATH }}
     
+    - name: Run DIY Script(执行自定义脚本)
+      run: |
+        cd $OPENWRT_PATH
+        chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
+        $GITHUB_WORKSPACE/$DIY_SCRIPT
+    
     - name: Install Feeds(安装feeds)
       run: |
         cd $OPENWRT_PATH
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-
-    - name: Run DIY Script(显式执行 diy-script.sh)
-      run: |
-        cd $OPENWRT_PATH
-        chmod +x $GITHUB_WORKSPACE/$DIY_SCRIPT
-        $GITHUB_WORKSPACE/$DIY_SCRIPT
 
     
     - name: Load Custom Configuration(加载自定义配置)
